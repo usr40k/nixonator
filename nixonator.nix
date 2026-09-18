@@ -2,8 +2,7 @@
 
 let
   nixonatorScript = pkgs.writeShellScriptBin "nixos-rebuild" ''
-    set -e
-
+  
     CONFIG_DIR="/etc/nixos"
     MODULES_DIR="$CONFIG_DIR/modules"
     cd "$CONFIG_DIR" || exit 1
