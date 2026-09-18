@@ -20,43 +20,36 @@ let
     warn() { echo -e "''${YELLOW}==> [Warning]''${RESET} $1"; }
     err() { echo -e "''${RED}==> [Error]''${RESET} $1"; }
 
-    # Load external configuration if present, otherwise exit and request installer run
     if [ -f "nixonator.conf" ]; then
       source "nixonator.conf"
     else
-      err "No nixonator.conf found!"
+      err "No nixonator.conf found in $CONFIG_DIR!"
       echo -e "Please run the installation setup script first:"
-      echo -e "  sh <(curl -sL https://raw.githubusercontent.com/usr40k/nixonator/main/install.sh)"
+      echo -e "  sudo bash <(curl -sL https://raw.githubusercontent.com/usr40k/nixonator/main/install.sh)"
       exit 1
     fi
 
-    # Host and User environment resolution
     HOSTNAME_VAL="$(hostname)"
     HOST_DIR="hosts/$HOSTNAME_VAL"
     HOST_LOCK="$HOST_DIR/flake.lock"
     mkdir -p "$HOST_DIR"
 
     if [ -n "$SUDO_USER" ]; then
-      USER_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
       export USER="$SUDO_USER"
     else
-      USER_HOME="$HOME"
       export USER="$(whoami)"
     fi
 
-    # Resolve SSH key path dynamically
     eval SSH_KEY_EXPANDED="$SSH_KEY_PATH"
     if [ -f "$SSH_KEY_EXPANDED" ]; then
       export GIT_SSH_COMMAND="ssh -i $SSH_KEY_EXPANDED -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
     fi
 
-    # DE-agnostic GPG & Keyring environment setup
     export GPG_TTY=$(tty)
     if command -v gpg-connect-agent >/dev/null 2>&1; then
       gpg-connect-agent updatestartuptty /bye >/dev/null 2>&1 || true
     fi
 
-    # Parse custom wrapper arguments
     DO_GIT=true
     REBUILD_ARGS=()
 
@@ -109,7 +102,7 @@ let
             success "Nuke complete! Please re-run your configuration setup."
             exit 0
           else
-            err "Dangerous command! To confirm complete wipe and re-clone, run: nixos-rebuild --nuke CONFIRM"
+            err "Dangerous command! To confirm complete wipe and re-clone, run: sudo nixos-rebuild --nuke CONFIRM"
             exit 1
           fi
           ;;
@@ -120,7 +113,6 @@ let
       esac
     done
 
-    # Bring host lock file to root for evaluation
     if [ -f "$HOST_LOCK" ]; then
       cp "$HOST_LOCK" flake.lock
     elif [ -f "flake.lock" ]; then
@@ -134,7 +126,6 @@ let
         git branch -M "$GIT_BRANCH"
       fi
 
-      # Configure Git User & GPG Signing locally if provided
       if [ -n "$GIT_USER_NAME" ]; then
         git config user.name "$GIT_USER_NAME"
       fi
@@ -146,7 +137,6 @@ let
         git config commit.gpgsign true
       fi
 
-      # Seamlessly handle git state without printing dirty warnings
       STASHED=false
       if ! git diff-index --quiet HEAD -- 2>/dev/null; then
         info "Stashing local uncommitted changes..."
@@ -165,14 +155,12 @@ let
       fi
     fi
 
-    # Gather pre-rebuild state
     TIMESTAMP="$(date '+%Y-%m-%d %H:%M:%S %Z')"
     PREV_PROFILE=$(readlink -f /nix/var/nix/profiles/system || true)
     PREV_GEN_INFO="$(${pkgs.nix}/bin/nix-env -p /nix/var/nix/profiles/system --list-generations | grep '(current)' || true)"
 
     info "Starting NixOS rebuild for ''${CYAN}$HOSTNAME_VAL''${RESET}..."
     
-    # Execute build with clean output formatting
     set +e
     ${pkgs.nixos-rebuild}/bin/nixos-rebuild ''${REBUILD_ARGS[@]} --impure --flake "$CONFIG_DIR#$HOSTNAME_VAL" --log-format internal-json -v 2>&1 | ${pkgs.nix-output-monitor}/bin/nom --json
     REBUILD_EXIT=$?
@@ -184,7 +172,6 @@ let
       exit $REBUILD_EXIT
     fi
 
-    # Optional Auto Garbage Collection
     if [ "$AUTO_GC" = "true" ]; then
       info "Running automatic garbage collection (removing generations older than $GC_DAYS days)..."
       sudo nix profile wipe-history --older-than "$GC_DAYS"d >/dev/null 2>&1 || true
