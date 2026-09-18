@@ -29,20 +29,33 @@ if [ -z "$REPO_URL" ]; then
   exit 1
 fi
 
+# Clone or initialize the repository properly
 if [ ! -d ".git" ]; then
-  git init
-  git remote add origin "$REPO_URL"
-  git branch -M main
+  info "Cloning repository from $REPO_URL..."
+  # Use temporary directory or clone directly into current dir if empty
+  if [ -z "$(ls -A "$CONFIG_DIR")" ]; then
+    git clone "$REPO_URL" .
+  else
+    # If directory has leftover files, initialize and pull
+    git init
+    git remote add origin "$REPO_URL"
+    git branch -M main
+    git fetch origin main || true
+    git reset --mixed origin/main || true
+  fi
 else
   git remote set-url origin "$REPO_URL" 2>/dev/null || git remote add origin "$REPO_URL"
+  info "Pulling latest changes from remote..."
+  git pull origin main || true
 fi
 
+# Generate configuration file if it doesn't exist
 if [ ! -f "nixonator.conf" ]; then
   info "Generating nixonator.conf..."
   read -p "Enter your Git User Name: " GIT_NAME </dev/tty
   read -p "Enter your Git User Email: " GIT_EMAIL </dev/tty
 
-  cat <<EOF> nixonator.conf
+  cat <<EOF > nixonator.conf
 # Nixonator Configuration
 REPO_URL="$REPO_URL"
 GIT_BRANCH="main"
