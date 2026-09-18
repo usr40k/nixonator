@@ -1,8 +1,22 @@
-{ config, lib, pkgs, ... }:
+# NOTE: Intentional `nixos-rebuild` name collision.
+# This module defines a `nixos-rebuild` wrapper (via writeShellScriptBin) that
+# shadows the stock NixOS binary. Which one actually wins depends on PATH
+# resolution between this package and the `nixos` package's own `nixos-rebuild`.
+# Do NOT assume this wrapper always comes first:
+#   - If you observe plain NixOS rebuild behavior instead of Nixonator's output,
+#     this wrapper is being shadowed by the real binary.
+#   - Fix by raising this package's priority in environment.systemPackages
+#     (e.g. `lib.setPrio 1 nixonatorScript` or `meta.priority`), or by invoking
+#     the wrapper through an explicit PATH in your host configuration.
+{
+  config,
+  lib,
+  pkgs,
+  ...
+}:
 
 let
-  nixonatorScript = pkgs.writeShellScriptBin "nixos-rebuild" ''
-  
+  nixonatorScript = pkgs.writeShellScriptBin "nixos-rebuild" ''  
     CONFIG_DIR="/etc/nixos"
     MODULES_DIR="$CONFIG_DIR/modules"
     cd "$CONFIG_DIR" || exit 1
@@ -162,7 +176,7 @@ let
     info "Starting NixOS rebuild for ''${CYAN}$HOSTNAME_VAL''${RESET}..."
     
     set +e
-    ${pkgs.nixos-rebuild}/bin/nixos-rebuild ''${REBUILD_ARGS[@]} --impure --flake "$CONFIG_DIR#$HOSTNAME_VAL" --log-format internal-json -v 2>&1 | ${pkgs.nix-output-monitor}/bin/nom --json
+    ${pkgs.nixos-rebuild}/bin/nixos-rebuild "''${REBUILD_ARGS[@]}" --impure --flake "$CONFIG_DIR#$HOSTNAME_VAL" --log-format internal-json -v 2>&1 | ${pkgs.nix-output-monitor}/bin/nom --json
     REBUILD_EXIT=$?
     set -e
 
@@ -247,5 +261,6 @@ in
   programs.gnupg.agent = {
     enable = true;
     enableSSHSupport = true;
+    pinentryPackage = pkgs.pinentry-qt; # Or pkgs.pinentry-kde depending on your setup
   };
 }
