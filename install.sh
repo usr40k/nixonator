@@ -12,9 +12,9 @@ GREEN='\033[1;32m'
 BLUE='\033[1;34m'
 RESET='\033[0m'
 
-info() { echo -e "''${BLUE}==>''${RESET} $1"; }
-success() { echo -e "''${GREEN}==>''${RESET} $1"; }
-err() { echo -e "''${RED}==> [Error]''${RESET} $1"; }
+info() { echo -e "${BLUE}==>${RESET} $1"; }
+success() { echo -e "${GREEN}==>${RESET} $1"; }
+err() { echo -e "${RED}==> [Error]${RESET} $1"; }
 
 info "Initializing Nixonator root-protected bootstrap installation..."
 
@@ -22,7 +22,8 @@ CONFIG_DIR="/etc/nixos"
 mkdir -p "$CONFIG_DIR"
 cd "$CONFIG_DIR"
 
-read -p "Enter your dotfiles git repository URL: " REPO_URL
+# Explicitly read from /dev/tty so piping via curl | sudo sh works smoothly
+read -p "Enter your dotfiles git repository URL: " REPO_URL </dev/tty
 if [ -z "$REPO_URL" ]; then
   err "Repository URL cannot be empty!"
   exit 1
@@ -38,10 +39,10 @@ fi
 
 if [ ! -f "nixonator.conf" ]; then
   info "Generating nixonator.conf..."
-  read -p "Enter your Git User Name: " GIT_NAME
-  read -p "Enter your Git User Email: " GIT_EMAIL
+  read -p "Enter your Git User Name: " GIT_NAME </dev/tty
+  read -p "Enter your Git User Email: " GIT_EMAIL </dev/tty
 
-  cat <<EOF > nixonator.conf
+  cat <<EOF> nixonator.conf
 # Nixonator Configuration
 REPO_URL="$REPO_URL"
 GIT_BRANCH="main"
