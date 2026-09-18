@@ -29,20 +29,17 @@ if [ -z "$REPO_URL" ]; then
   exit 1
 fi
 
-# Clone or initialize the repository properly
+# Clone or pull down repository contents cleanly
 if [ ! -d ".git" ]; then
-  info "Cloning repository from $REPO_URL..."
-  # Use temporary directory or clone directly into current dir if empty
-  if [ -z "$(ls -A "$CONFIG_DIR")" ]; then
-    git clone "$REPO_URL" .
-  else
-    # If directory has leftover files, initialize and pull
-    git init
-    git remote add origin "$REPO_URL"
-    git branch -M main
-    git fetch origin main || true
-    git reset --mixed origin/main || true
-  fi
+  info "Setting up Git repository and pulling from remote..."
+  git init -b main
+  git remote add origin "$REPO_URL"
+  
+  # Fetch and reset to main if remote branch exists, otherwise ignore error for fresh repo
+  set +e
+  git fetch origin main
+  git checkout -b main origin/main 2>/dev/null || true
+  set -e
 else
   git remote set-url origin "$REPO_URL" 2>/dev/null || git remote add origin "$REPO_URL"
   info "Pulling latest changes from remote..."
