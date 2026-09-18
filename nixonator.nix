@@ -5,6 +5,7 @@ let
     set -e
 
     CONFIG_DIR="/etc/nixos"
+    MODULES_DIR="$CONFIG_DIR/modules"
     cd "$CONFIG_DIR" || exit 1
 
     # ANSI Color Codes
@@ -20,12 +21,12 @@ let
     warn() { echo -e "''${YELLOW}==> [Warning]''${RESET} $1"; }
     err() { echo -e "''${RED}==> [Error]''${RESET} $1"; }
 
-    if [ -f "nixonator.conf" ]; then
-      source "nixonator.conf"
+    if [ -f "$MODULES_DIR/nixonator/nixonator.conf" ]; then
+      source "$MODULES_DIR/nixonator/nixonator.conf"
     else
-      err "No nixonator.conf found in $CONFIG_DIR!"
+      err "No nixonator.conf found in $MODULES_DIR/nixonator!"
       echo -e "Please run the installation setup script first:"
-      echo -e "  sudo bash <(curl -sL https://raw.githubusercontent.com/usr40k/nixonator/main/install.sh)"
+      echo -e "  sudo bash <(curl -sL https://raw.githubusercontent.com/usr40k/nixonator/refs/heads/main/install.sh)"
       exit 1
     fi
 

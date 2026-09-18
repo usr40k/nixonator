@@ -29,30 +29,48 @@ if [ -z "$REPO_URL" ]; then
   exit 1
 fi
 
-# Clone or pull down repository contents cleanly
+# Clone repository directly if .git doesn't exist
 if [ ! -d ".git" ]; then
-  info "Setting up Git repository and pulling from remote..."
-  git init -b main
-  git remote add origin "$REPO_URL"
-  
-  # Fetch and reset to main if remote branch exists, otherwise ignore error for fresh repo
-  set +e
-  git fetch origin main
-  git checkout -b main origin/main 2>/dev/null || true
-  set -e
+  if [ -z "$(ls -A "$CONFIG_DIR")" ]; then
+    info "Cloning repository from $REPO_URL..."
+    git clone "$REPO_URL" .
+  else
+    info "Directory is not empty. Initializing remote connection..."
+    git init -b main
+    git remote add origin "$REPO_URL"
+    git fetch origin main
+    git checkout -b main origin/main 2>/dev/null || true
+  fi
 else
   git remote set-url origin "$REPO_URL" 2>/dev/null || git remote add origin "$REPO_URL"
   info "Pulling latest changes from remote..."
   git pull origin main || true
 fi
 
+# Ensure modules/nixonator directory exists
+MODULE_DIR="$CONFIG_DIR/modules/nixonator"
+mkdir -p "$MODULE_DIR"
+
+# Automatically create or fetch nixonator.nix if missing locally
+if [ ! -f "$MODULE_DIR/nixonator.nix" ]; then
+  info "Fetching/creating nixonator.nix module..."
+  # If fetching from a live repo, or writing it directly:
+  curl -sL "https://raw.githubusercontent.com/usr40k/nixonator/main/modules/nixonator/nixonator.nix" -o "$MODULE_DIR/nixonator.nix" 2>/dev/null || true
+  
+  # Fallback if remote fetch fails or isn't pushed yet
+  if [ ! -s "$MODULE_DIR/nixonator.nix" ]; then
+    warn "Could not fetch remote nixonator.nix, generating base template..."
+    # A lightweight fallback can be placed here or handled via repo inclusion
+  fi
+fi
+
 # Generate configuration file if it doesn't exist
-if [ ! -f "nixonator.conf" ]; then
+if [ ! -f "$MODULE_DIR/nixonator.conf" ]; then
   info "Generating nixonator.conf..."
   read -p "Enter your Git User Name: " GIT_NAME </dev/tty
   read -p "Enter your Git User Email: " GIT_EMAIL </dev/tty
 
-  cat <<EOF > nixonator.conf
+  cat <<EOF > $MODULE_DIR/nixonator.conf
 # Nixonator Configuration
 REPO_URL="$REPO_URL"
 GIT_BRANCH="main"
@@ -67,13 +85,31 @@ GPG_SIGNING_KEY=""
 AUTO_GC="true"
 GC_DAYS="7"
 EOF
-  success "Created $CONFIG_DIR/nixonator.conf"
+  success "Created $MODULE_DIR/nixonator.conf"
 fi
 
 # Ensure git trusts the root-owned repository directory
 git config --system --add safe.directory "$CONFIG_DIR" 2>/dev/null || git config --global --add safe.directory "$CONFIG_DIR" 2>/dev/null || true
 
 success "Nixonator root-protected bootstrap complete!"
-echo "Next steps:"
-echo "  1. Add your host configuration inside /etc/nixos/hosts/\$(hostname)/"
-echo "  2. Run 'sudo nixos-rebuild switch' to build and deploy your system."
+echo ""
+echo "======================================================================"
+echo "🎯 NEXT STEPS TO ACTIVATE NIXONATOR:"
+echo "======================================================================"
+echo "1. Ensure Flakes are enabled in your system (e.g. in configuration.nix):"
+echo "   nix.settings.experimental-features = [ \"nix-command\" \"flakes\" ];"
+echo ""
+echo "2. Import the Nixonator module inside your host configuration file"
+echo "   (e.g., hosts/\$(hostname)/default.nix or configuration.nix):"
+echo "   imports = [ ../../modules/nixonator/nixonator.nix ];"
+echo ""
+echo "3. Ensure your flake outputs map to your hostname:"
+echo "   outputs = { self, nixpkgs, ... }@inputs: {"
+echo "     nixosConfigurations.$(hostname) = nixpkgs.lib.nixosSystem {"
+echo "       modules = [ ./hosts/$(hostname)/configuration.nix ];"
+echo "     };"
+echo "   };"
+echo ""
+echo "4. Run your first managed rebuild:"
+echo "   sudo nixos-rebuild switch"
+echo "======================================================================"
