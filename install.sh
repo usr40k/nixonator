@@ -136,6 +136,8 @@ PRE_INSTALL_SUMMARY="true"
 CONFIRM_UPDATE="false"
 
 # Output style
+SUMMARY_STYLE="zypper"
+HIDE_DEBUG_LOGS="true"
 PRETTY_GIT_SUMMARY="true"
 SHOW_GC_STATS="true"
 

@@ -3,7 +3,8 @@
 Nixonator is a NixOS helper that wraps `nixos-rebuild` in a script which:
 
 - pulls your NixOS config from a git repo (dotfiles-style `/etc/nixos` management),
-- optionally shows a pre-rebuild summary and asks for confirmation,
+- optionally shows a pre-rebuild summary (host/branch/flake target plus a
+  categorized package delta) and asks for confirmation,
 - runs `nixos-rebuild` (or any subcommand/flags you pass) against a per-host
   flake output,
 - diffs the resulting package set with `nvd`,
@@ -16,9 +17,11 @@ bootstrap installer (`install.sh`).
 
 ## How it works
 
-`nixonator.nix` is a NixOS module that uses `pkgs.writeShellScriptBin` to
-build a script literally named `nixos-rebuild` and adds it to
-`environment.systemPackages`. Once the module is imported, calling
+`nixonator.nix` is a NixOS module that compiles a small C program (via
+`pkgs.runCommandCC`) into a binary literally named `nixos-rebuild` and adds it
+to `environment.systemPackages`. The store paths of `nix`, `nvd`,
+`nix-output-monitor`, `nixos-rebuild`, `git`, and `curl` are baked into the
+binary at build time. Once the module is imported, calling
 `sudo nixos-rebuild <args>` on the machine runs the Nixonator wrapper, which
 calls the real `nixos-rebuild` internally.
 
@@ -100,6 +103,7 @@ Once installed, `nixos-rebuild` behaves as usual, with extra flags:
 | Flag | Effect |
 |---|---|
 | `--no-git` | Skip the git pull/commit/push steps for this run. |
+| `--nxn-verbose` | Nixonator's own flag (never forwarded to the real `nixos-rebuild`): traces every command the wrapper runs to stderr, surfaces the output of captured commands (`nix eval`/`nix build`/`nvd`/`git ...`), and shows normally-swallowed stderr. Works with every subcommand. |
 | `--upgrade` | Runs `nix flake update` for the host's flake, locks the result, and exits (does not rebuild). |
 | `--nixonator-update` | Re-fetches `nixonator.nix` from the GitHub repo into `modules/nixonator/`. |
 | `--nuke CONFIRM` | **Destructive.** Deletes `.git`, `hosts`, `modules`, `flake.nix`, `flake.lock`, and `nixonator.conf` from `/etc/nixos`, then re-clones from `REPO_URL` by default. Requires the literal `CONFIRM` argument. |
@@ -112,8 +116,15 @@ On a normal run, the wrapper will:
 1. Sync `flake.lock` between the shared location and the per-host copy.
 2. Stash any uncommitted local changes, fetch/merge from `origin/$GIT_BRANCH`,
    then pop the stash back.
-3. Show a **pre-rebuild summary** (host, branch, flake target, extra args,
-   and any uncommitted local changes) if `PRE_INSTALL_SUMMARY="true"`.
+3. Show a **pre-rebuild summary** if `PRE_INSTALL_SUMMARY="true"`: host,
+   branch, flake target, extra args, uncommitted local changes, and a package
+   delta summary — `nvd diff` of the running system against the target flake's
+   toplevel, rendered in the configured `SUMMARY_STYLE`.
+   (`nix eval` only hands back the *expected* store path, so if the target has
+   not been built yet it is built first via `nix build --no-link
+   --print-out-paths` — the same derivation `nixos-rebuild` compiles right
+   after, so the work is reused from the store instead of being done twice.
+   When `--nxn-verbose` is passed, every underlying command is shown.)
 4. Ask **"Proceed with rebuild? [y/N]"** if `CONFIRM_UPDATE="true"`, aborting
    cleanly if you answer no.
 5. Run `nixos-rebuild --impure --flake /etc/nixos#$(hostname)` with the args
@@ -124,9 +135,10 @@ On a normal run, the wrapper will:
 8. Stage tracked-file changes automatically. For any **new, untracked**
    files, prompt per `PROMPT_UNTRACKED` (see below).
 9. Commit everything with a message containing the hostname, user, timestamp,
-   generation info, package diff, and changed files, then push to
-   `origin/$GIT_BRANCH`. If `PRETTY_GIT_SUMMARY="true"`, also print a
-   colorized added/modified/deleted summary with the diffstat line.
+   generation info, the pre-rebuild package delta summary (when it could be
+   computed), the post-rebuild package profile diff, and the changed files,
+   then push to `origin/$GIT_BRANCH`. If `PRETTY_GIT_SUMMARY="true"`, also
+   print a short git summary block with the staged diffstat.
 
 ## Configuration
 
@@ -152,6 +164,8 @@ PRE_INSTALL_SUMMARY="true"
 CONFIRM_UPDATE="false"
 
 # Output style
+SUMMARY_STYLE="zypper"  # zypper | traditional | grid | list
+HIDE_DEBUG_LOGS="true"  # true (hide) | format (show dimmed) | false (raw)
 PRETTY_GIT_SUMMARY="true"
 SHOW_GC_STATS="true"
 
@@ -166,12 +180,16 @@ PROMPT_UNTRACKED="ask"
 |---|---|---|
 | `PRE_INSTALL_SUMMARY` | `true` / `false` | Print host, branch, flake target, and pending local changes before rebuilding. |
 | `CONFIRM_UPDATE` | `true` / `false` | Require a `[y/N]` confirmation before the rebuild runs. |
-| `PRETTY_GIT_SUMMARY` | `true` / `false` | Print a colorized added/modified/deleted file list and diffstat after committing. |
+| `SUMMARY_STYLE` | `zypper` / `traditional` / `grid` / `list` | How the pre-rebuild package delta is rendered (`zypper` and `traditional` are identical; anything unrecognised falls back to `list`). |
+| `HIDE_DEBUG_LOGS` | `true` / `format` / `false` | `true` drops `debug:` lines from `nix`/`nixos-rebuild` output, `format` prints them dimmed, `false` passes them through to `nom`/stdout. |
+| `PRETTY_GIT_SUMMARY` | `true` / `false` | Print a git summary block with the staged diffstat after committing. |
 | `SHOW_GC_STATS` | `true` / `false` | Show how much was freed by `nix-collect-garbage` (only relevant when `AUTO_GC="true"`). |
 | `PROMPT_UNTRACKED` | `ask` / `always` / `never` | How to handle files under `/etc/nixos` that git doesn't yet track. Picking `[a]lways` at a prompt persists `PROMPT_UNTRACKED="always"` back to this file automatically. |
 
-All five keys have safe built-in defaults, so an existing `nixonator.conf`
-from before these options existed will keep working without edits.
+Every key has a safe built-in default (including `SUMMARY_STYLE` and
+`HIDE_DEBUG_LOGS`, which `install.sh` only writes on fresh installs), so an
+existing `nixonator.conf` from before any of these options existed keeps
+working without edits.
 
 Edit this file directly to change the git remote, branch, SSH key, GPG
 signing key, GC retention window, or any of the options above.
