@@ -34,14 +34,24 @@ let
     warn() { echo -e "''${YELLOW}==> [Warning]''${RESET} $1"; }
     err() { echo -e "''${RED}==> [Error]''${RESET} $1"; }
 
-    if [ -f "$MODULES_DIR/nixonator/nixonator.conf" ]; then
-      source "$MODULES_DIR/nixonator/nixonator.conf"
+    NIXONATOR_CONF="$MODULES_DIR/nixonator/nixonator.conf"
+
+    if [ -f "$NIXONATOR_CONF" ]; then
+      source "$NIXONATOR_CONF"
     else
       err "No nixonator.conf found in $MODULES_DIR/nixonator!"
       echo -e "Please run the installation setup script first:"
       echo -e "  sudo bash <(curl -sL https://raw.githubusercontent.com/usr40k/nixonator/refs/heads/main/install.sh)"
       exit 1
     fi
+
+    # Defaults for options that may be missing from an older nixonator.conf,
+    # so upgrading the module doesn't require regenerating the config file.
+    : "''${PRE_INSTALL_SUMMARY:=true}"
+    : "''${CONFIRM_UPDATE:=false}"
+    : "''${PRETTY_GIT_SUMMARY:=true}"
+    : "''${SHOW_GC_STATS:=true}"
+    : "''${PROMPT_UNTRACKED:=ask}"
 
     HOSTNAME_VAL="$(hostname)"
     HOST_DIR="hosts/$HOSTNAME_VAL"
@@ -109,14 +119,28 @@ let
           ;;
         --nuke)
           if [ "$2" = "CONFIRM" ]; then
+            RECLONE=true
+            for arg in "$@"; do
+              if [ "$arg" = "--no-reclone" ]; then
+                RECLONE=false
+              fi
+            done
+
             warn "Nuking configuration directory ($CONFIG_DIR)..."
             rm -rf .git hosts modules flake.nix flake.lock nixonator.conf 2>/dev/null || true
-            info "Re-cloning repository from $REPO_URL..."
-            git clone "$REPO_URL" .
-            success "Nuke complete! Please re-run your configuration setup."
+
+            if [ "$RECLONE" = true ]; then
+              info "Re-cloning repository from $REPO_URL..."
+              git clone "$REPO_URL" .
+              success "Nuke complete! Please re-run your configuration setup."
+            else
+              info "Skipping re-clone (--no-reclone passed)."
+              success "Nuke complete! $CONFIG_DIR is now empty."
+            fi
             exit 0
           else
             err "Dangerous command! To confirm complete wipe and re-clone, run: sudo nixos-rebuild --nuke CONFIRM"
+            err "By default this re-clones $REPO_URL afterward. To skip that, add --no-reclone."
             exit 1
           fi
           ;;
@@ -173,6 +197,34 @@ let
     PREV_PROFILE=$(readlink -f /nix/var/nix/profiles/system || true)
     PREV_GEN_INFO="$(${pkgs.nix}/bin/nix-env -p /nix/var/nix/profiles/system --list-generations | grep '(current)' || true)"
 
+    if [ "$PRE_INSTALL_SUMMARY" = "true" ]; then
+      echo -e "''${CYAN}────────────────────────────────────────────''${RESET}"
+      echo -e "''${CYAN}Nixonator: pre-rebuild summary''${RESET}"
+      echo -e "  Host:          $HOSTNAME_VAL"
+      echo -e "  Branch:        $GIT_BRANCH"
+      echo -e "  Flake target:  $CONFIG_DIR#$HOSTNAME_VAL"
+      echo -e "  Extra args:    ''${REBUILD_ARGS[*]:-(none)}"
+      if [ -d .git ]; then
+        PENDING_COUNT="$(git status --porcelain 2>/dev/null | wc -l | tr -d ' ')"
+        echo -e "  Local changes: ''${PENDING_COUNT:-0} file(s) not yet committed"
+        if [ "''${PENDING_COUNT:-0}" -gt 0 ]; then
+          git status --short 2>/dev/null | sed 's/^/    /'
+        fi
+      fi
+      echo -e "''${CYAN}────────────────────────────────────────────''${RESET}"
+    fi
+
+    if [ "$CONFIRM_UPDATE" = "true" ]; then
+      read -p "$(echo -e "''${YELLOW}Proceed with rebuild? [y/N]: ''${RESET}")" CONFIRM_ANS </dev/tty || CONFIRM_ANS="n"
+      case "$CONFIRM_ANS" in
+        y|Y|yes|YES) ;;
+        *)
+          warn "Rebuild cancelled by user."
+          exit 0
+          ;;
+      esac
+    fi
+
     info "Starting NixOS rebuild for ''${CYAN}$HOSTNAME_VAL''${RESET}..."
     
     set +e
@@ -189,7 +241,21 @@ let
     if [ "$AUTO_GC" = "true" ]; then
       info "Running automatic garbage collection (removing generations older than $GC_DAYS days)..."
       sudo nix profile wipe-history --older-than "$GC_DAYS"d >/dev/null 2>&1 || true
-      nix-collect-garbage --delete-older-than "$GC_DAYS"d >/dev/null 2>&1 || true
+
+      if [ "$SHOW_GC_STATS" = "true" ]; then
+        GC_OUTPUT="$(nix-collect-garbage --delete-older-than "$GC_DAYS"d 2>&1 || true)"
+        GC_STATS_LINE="$(echo "$GC_OUTPUT" | grep -Ei 'freed|store paths deleted' | tail -n 1)"
+        echo -e "''${CYAN}────────────────────────────────────────────''${RESET}"
+        echo -e "''${CYAN}Nixonator: garbage collection summary''${RESET}"
+        if [ -n "$GC_STATS_LINE" ]; then
+          echo -e "  ''${GREEN}$GC_STATS_LINE''${RESET}"
+        else
+          echo -e "  Nothing to collect (no generations older than $GC_DAYS days)."
+        fi
+        echo -e "''${CYAN}────────────────────────────────────────────''${RESET}"
+      else
+        nix-collect-garbage --delete-older-than "$GC_DAYS"d >/dev/null 2>&1 || true
+      fi
     fi
 
     NEW_PROFILE=$(readlink -f /nix/var/nix/profiles/system || true)
@@ -203,7 +269,53 @@ let
 
     if [ "$DO_GIT" = true ]; then
       rm -f flake.lock
-      git add -A
+
+      # Stage changes/deletions to files git already tracks.
+      git add -u
+
+      # Handle newly created (untracked) files according to PROMPT_UNTRACKED:
+      #   ask    - prompt per file: [y]es/[n]o/[a]lways (persists "always" to nixonator.conf)
+      #   always - stage every untracked file without prompting
+      #   never  - leave untracked files untracked
+      UNTRACKED_FILES="$(git ls-files --others --exclude-standard)"
+      if [ -n "$UNTRACKED_FILES" ]; then
+        case "$PROMPT_UNTRACKED" in
+          never)
+            info "Leaving $(echo "$UNTRACKED_FILES" | wc -l | tr -d ' ') untracked file(s) untracked (PROMPT_UNTRACKED=never)."
+            ;;
+          always)
+            while IFS= read -r f; do
+              [ -n "$f" ] && git add "$f"
+            done <<< "$UNTRACKED_FILES"
+            ;;
+          *)
+            while IFS= read -r f; do
+              [ -z "$f" ] && continue
+              read -p "$(echo -e "''${YELLOW}New untracked file: $f — add to repo? [y]es/[n]o/[a]lways: ''${RESET}")" UT_ANS </dev/tty || UT_ANS="n"
+              case "$UT_ANS" in
+                y|Y|yes|YES)
+                  git add "$f"
+                  ;;
+                a|A|always|ALWAYS)
+                  git add "$f"
+                  PROMPT_UNTRACKED="always"
+                  if [ -f "$NIXONATOR_CONF" ]; then
+                    if grep -q '^PROMPT_UNTRACKED=' "$NIXONATOR_CONF"; then
+                      sed -i 's/^PROMPT_UNTRACKED=.*/PROMPT_UNTRACKED="always"/' "$NIXONATOR_CONF"
+                    else
+                      echo 'PROMPT_UNTRACKED="always"' >> "$NIXONATOR_CONF"
+                    fi
+                  fi
+                  info "PROMPT_UNTRACKED set to \"always\" in nixonator.conf; future new files will be added automatically."
+                  ;;
+                *)
+                  info "Leaving $f untracked."
+                  ;;
+              esac
+            done <<< "$UNTRACKED_FILES"
+            ;;
+        esac
+      fi
 
       FILE_SUMMARY="$(git diff --cached --name-status | while read -r status file; do
         case "$status" in
@@ -234,8 +346,26 @@ let
     $FILE_SUMMARY"
 
       if ! git diff --cached --quiet; then
+        CACHED_STATUS="$(git diff --cached --name-status)"
         info "Committing configuration changes..."
         git commit -m "$COMMIT_MSG" >/dev/null 2>&1
+
+        if [ "$PRETTY_GIT_SUMMARY" = "true" ]; then
+          echo -e "''${CYAN}────────────────────────────────────────────''${RESET}"
+          echo -e "''${CYAN}Nixonator: git summary''${RESET}"
+          echo -e "  Commit: $(git rev-parse --short HEAD)"
+          echo "$CACHED_STATUS" | while read -r status file; do
+            case "$status" in
+              A) echo -e "  ''${GREEN}+ added''${RESET}     $file" ;;
+              M) echo -e "  ''${YELLOW}~ modified''${RESET}  $file" ;;
+              D) echo -e "  ''${RED}- deleted''${RESET}   $file" ;;
+              *) echo -e "    $status $file" ;;
+            esac
+          done
+          STAT_LINE="$(git show --stat --format="" HEAD 2>/dev/null | tail -n 1)"
+          [ -n "$STAT_LINE" ] && echo -e "  $STAT_LINE"
+          echo -e "''${CYAN}────────────────────────────────────────────''${RESET}"
+        fi
       else
         info "No configuration file changes to commit."
       fi

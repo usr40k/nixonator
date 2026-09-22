@@ -130,6 +130,20 @@ GPG_SIGNING_KEY=""
 # Automatic Garbage Collection Options
 AUTO_GC="true"
 GC_DAYS="7"
+
+# Pre-rebuild summary & confirmation
+PRE_INSTALL_SUMMARY="true"
+CONFIRM_UPDATE="false"
+
+# Output style
+PRETTY_GIT_SUMMARY="true"
+SHOW_GC_STATS="true"
+
+# How to handle newly created (untracked) files in $CONFIG_DIR:
+#   ask    - prompt per file: [y]es/[n]o/[a]lways
+#   always - stage every untracked file automatically
+#   never  - never stage untracked files automatically
+PROMPT_UNTRACKED="ask"
 EOF
   success "Created $MODULE_DIR/nixonator.conf"
 fi
